@@ -78,26 +78,39 @@ class SarsaLambdaModel:
 
 
 # %%
-class LinearApproximationModel:
-    CUBOID_INTERVALS = {
-        "dealer": [[1, 4], [4, 7], [7, 10]],
-        "player": [[1, 6], [4, 9], [7, 12], [10, 15], [13, 18], [16, 21]],
-    }
-    𝛜 = 0.05
-    𝚨 = 0.01
 
-    @classmethod
-    def 𝛟(cls, state, action):
-        features = np.zeros((3, 6, 2), dtype=np.bool)
-        for x, (dealer_start, dealer_end) in enumerate(cls.CUBOID_INTERVALS["dealer"]):
-            for y, (player_start, player_end) in enumerate(
-                cls.CUBOID_INTERVALS["player"]
-            ):
+CUBOID_INTERVALS = {
+    "dealer": [[1, 4], [4, 7], [7, 10]],
+    "player": [[1, 6], [4, 9], [7, 12], [10, 15], [13, 18], [16, 21]],
+}
+
+
+def build_𝛟():
+    def build(state, action):
+        features = np.zeros((6, 3, 2), dtype=np.bool)
+        for x, (player_start, player_end) in enumerate(
+            CUBOID_INTERVALS["player"]
+        ):
+            for y, (dealer_start, dealer_end) in enumerate(CUBOID_INTERVALS["dealer"]):
                 features[x, y, action] = (
                     dealer_start <= state["dealer"] <= dealer_end
                     and player_start <= state["player"] <= player_end
                 )
         return features.reshape(-1)
+    
+    ret = np.zeros((22, 11, 2, 36), dtype=np.float16)
+    for player, dealer, action in it.product(
+        range(1, 22),
+        range(1, 11),
+        range(2),
+    ):
+        ret[player, dealer, action] = build({"dealer": dealer, "player": player}, action)
+    return ret
+
+class LinearApproximationModel:
+    𝛜 = 0.05
+    𝚨 = 0.01
+    𝛟 = build_𝛟()
 
     def __init__(self, 𝛌) -> None:
         self.𝛌 = 𝛌
@@ -107,7 +120,7 @@ class LinearApproximationModel:
         E = np.zeros((36))
         state = get_starting_state()
         action = self.pick_action(state)
-        features = self.𝛟(state, action)
+        features = self.𝛟[state["player"], state["dealer"], action]
 
         while not state["is_terminal"]:
             next_state, reward = step(state, ACTIONS[action])
@@ -116,7 +129,7 @@ class LinearApproximationModel:
                 𝛅 = reward - np.dot(features, self.θ)
             else:
                 next_action = self.pick_action(next_state)
-                next_features = self.𝛟(next_state, next_action)
+                next_features = self.𝛟[next_state["player"], next_state["dealer"], next_action]
                 𝛅 = reward + np.dot(next_features, self.θ) - np.dot(features, self.θ)
             # NOTE features is simply the gradient of q̂(S, A, w) with respect to w
             E = self.λ * E + features
@@ -131,17 +144,7 @@ class LinearApproximationModel:
 
     @property
     def Q(self):
-        ret = np.zeros((22, 11, 2), dtype=np.float16)
-        for player, dealer, action in it.product(
-            range(1, 22),
-            range(1, 11),
-            range(2),
-        ):
-            ret[player, dealer, action] = np.dot(
-                self.φ({"player": player, "dealer": dealer}, action),
-                self.θ,
-            )
-        return ret
+        return np.dot(self.𝛟, self.θ)
 
 def plot_metrics(model):
     cols, rows = 2, 2
@@ -204,24 +207,24 @@ if __name__ == "__main__":
     td_learning_curves = {0.0: [], 1.0: []}
     for 𝛌 in tqdm(np.linspace(0, 1, 11)):
         td_models[𝛌] = SarsaLambdaModel(𝛌)
-        for _ in range(1000):
+        for _ in range(10000):
             td_models[𝛌].run_episode()
             if 𝛌 not in td_learning_curves:
                 continue
-            td_learning_curves[𝛌].append(np.linalg.norm(td_models[𝛌].Q - mc_model.Q))
+            td_learning_curves[𝛌].append(np.pow(td_models[𝛌].Q - mc_model.Q, 2).mean())
 
     la_models = {}
     la_learning_curves = {0.0: [], 1.0: []}
     for 𝛌 in tqdm(np.linspace(0, 1, 11)):
         la_models[𝛌] = LinearApproximationModel(𝛌)
-        for _ in range(1000):
+        for _ in range(10000):
             la_models[𝛌].run_episode()
             if 𝛌 not in la_learning_curves:
                 continue
-            la_learning_curves[𝛌].append(np.linalg.norm(la_models[𝛌].Q - mc_model.Q))
+            la_learning_curves[𝛌].append(np.pow(la_models[𝛌].Q - mc_model.Q, 2).mean())
     
-    td_errors = {𝛌: np.linalg.norm(model.Q - mc_model.Q) for 𝛌, model in td_models.items()}
-    la_errors = {𝛌: np.linalg.norm(model.Q - mc_model.Q) for 𝛌, model in la_models.items()}
+    td_errors = {𝛌: np.pow(model.Q - mc_model.Q, 2).mean() for 𝛌, model in td_models.items()}
+    la_errors = {𝛌: np.pow(model.Q - mc_model.Q, 2).mean() for 𝛌, model in la_models.items()}
 
     plt.figure(figsize=(10, 8))
     ax = plt.subplot(121)
